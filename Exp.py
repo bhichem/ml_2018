@@ -11,7 +11,7 @@ import os
 import time
 import cv2
 from resnet50 import ResNet50
-#from vgg16 import VGG16
+from vgg16 import VGG16
 from keras.preprocessing import image
 from keras.layers import GlobalAveragePooling2D, Dense, Dropout, Activation, Flatten
 from keras.layers import Input
@@ -96,82 +96,86 @@ X_train, X_test, y_train, y_test = train_test_split(list_of_image_paths, labels,
 
 augmented_Xtrain = []
 y_train_labels = []
+
+images = []
 for index in range(len(X_train)):
+
 
     image = X_train[index]
     label = y_train[index]
 
-    flipped_image = flip_images(image)
-    rotatedMinus10Image = rotate(image, 10)
-    rotatedPlus10Image = rotate(image,  -10)
-    gaussianImage = gaussian_noise(image)
-    darkerImage = lighting(image, 0.5)
-    lighterImage = lighting(image,  1.5)
-    augmented_Xtrain.extend([image, flipped_image, rotatedMinus10Image, rotatedPlus10Image, gaussianImage, darkerImage, lighterImage])
+    images.append(image)
+    images.append(flip_images(image))
+    images.append(rotate(image, 10))
+    images.append(rotate(image,  -10))
+    images.append(gaussian_noise(image))
+    images.append(lighting(image, 0.5))
+    images.append(lighting(image,  1.5))
+   #+=[image, flipped_image, rotatedMinus10Image, rotatedPlus10Image, gaussianImage, darkerImage, lighterImage]
+
     y_train_labels.extend([label]*7)
 
-print(len(augmented_Xtrain))
-print(len(y_train_labels))
-
+augmented_X_train = np.uint8(images)
+y_train_labels = np.int32(y_train_labels)
 #################VGGFace Model############
 
-# image_input = Input(shape=(224, 224, 3))
-# nb_class = 136
-# hidden_dim = 2048
-#
-# vggface_model = VGGFace(input_tensor=image_input, include_top=True, weights='vggface', input_shape=(224, 224, 3),
-#                         pooling='max')
-# vggface_model.summary()
-#
-# pool5 = vggface_model.layers[-8]
-#
-# flatten = vggface_model.layers[-7]
-#
-# fc6 = vggface_model.layers[-6]
-# fc6relu = vggface_model.layers[-5]
-#
-# fc7 = vggface_model.layers[-4]
-# fc7relu = vggface_model.layers[-3]
-#
-# fc8 = vggface_model.layers[-2]
-# fc8relu = vggface_model.layers[-1]
-#
-# dropout1 = Dropout(0.5)
-# dropout2 = Dropout(0.5)
-#
-# # Reconnect the layers
-# x = dropout1(pool5.output)
-# x = flatten(x)
-# x = fc6(x)
-# x = fc6relu(x)
-# x = dropout2(x)
-# x = fc7(x)
-# x = fc7relu(x)
-# out = Dense(136, activation='softmax', name='output')(x)
-#
-# custom_vggface_model = Model(vggface_model.input, output=out)
-# # Resnet_model = ResNet50(weights='imagenet',include_top=False)
-#
-#
-# vggface_model.summary()
-# custom_vggface_model.summary()
-#
-# for layer in custom_vggface_model.layers[:-1]:
-#     layer.trainable = False
-#
-# custom_vggface_model.layers[-1].trainable
-# custom_vggface_model.summary()
-#
-# sgd = optimizers.SGD(lr=0.001, decay=1e-6, momentum=0.9, nesterov=True)
-# custom_vggface_model.compile(loss='categorical_crossentropy', optimizer=sgd, metrics=['accuracy'])
-#
-# t = time.time()
-# hist = custom_vggface_model.fit(X_train, y_train, batch_size=32, epochs=200, verbose=1,
-#                                 validation_data=(X_test, y_test))
-# print('Training time: %s' % (t - time.time()))
-# (loss, accuracy) = custom_vggface_model.evaluate(X_test, y_test, batch_size=32, verbose=1)
-#
-# print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
+image_input = Input(shape=(224, 224, 3))
+nb_class = 136
+hidden_dim = 2048
+
+vggface_model = VGGFace(input_tensor=image_input, include_top=True, weights='vggface', input_shape=(224, 224, 3),
+                         pooling='max')
+vggface_model.summary()
+
+pool5 = vggface_model.layers[-8]
+
+flatten = vggface_model.layers[-7]
+
+fc6 = vggface_model.layers[-6]
+fc6relu = vggface_model.layers[-5]
+
+fc7 = vggface_model.layers[-4]
+fc7relu = vggface_model.layers[-3]
+
+fc8 = vggface_model.layers[-2]
+fc8relu = vggface_model.layers[-1]
+
+dropout1 = Dropout(0.5)
+dropout2 = Dropout(0.5)
+
+# Reconnect the layers
+x = dropout1(pool5.output)
+x = flatten(x)
+x = fc6(x)
+x = fc6relu(x)
+x = dropout2(x)
+x = fc7(x)
+x = fc7relu(x)
+out = Dense(136, activation='softmax', name='output')(x)
+
+custom_vggface_model = Model(vggface_model.input, output=out)
+ # Resnet_model = ResNet50(weights='imagenet',include_top=False)
+
+
+vggface_model.summary()
+custom_vggface_model.summary()
+
+for layer in custom_vggface_model.layers[:-1]:
+     layer.trainable = False
+
+custom_vggface_model.layers[-1].trainable
+custom_vggface_model.summary()
+
+sgd = optimizers.SGD(lr=0.001, decay=1e-6, momentum=0.9, nesterov=True)
+custom_vggface_model.compile(loss='categorical_crossentropy', optimizer=sgd, metrics=['accuracy'])
+
+t = time.time()
+hist = custom_vggface_model.fit(augmented_X_train, y_train_labels, batch_size=16, epochs=200, verbose=1,
+                                 validation_data=(X_test, y_test))
+print('Training time: %s' % (t - time.time()))
+(loss, accuracy) = custom_vggface_model.evaluate(X_test, y_test, batch_size=16, verbose=1)
+
+print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
 
 #################VGG Model############
 # image_input = Input(shape=(224, 224, 3))
