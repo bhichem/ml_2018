@@ -2,7 +2,6 @@
 """
 Created on Sun Dec  9 11:30:54 2018
 
-@author: Amey
 """
 import random
 
