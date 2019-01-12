@@ -4,278 +4,416 @@ Created on Sun Dec  9 11:30:54 2018
 
 @author: Amey
 """
-import skimage
+import gc
+from statistics import mean
 
 import numpy as np
 import os
 import time
 import cv2
-#from resnet50 import ResNet50
-from vgg16 import VGG16
-from keras.applications.resnet50 import ResNet50
-#from keras.applications.vgg16 import VGG16
 
+from keras.models import load_model
+
+import resnet50
+from resnet50 import ResNet50
+# from vgg16 import VGG16
+from delorean import now
+
+from keras.applications.vgg16 import VGG16
+from keras.models import model_from_json
 from keras.preprocessing import image as Image
 from keras.layers import GlobalAveragePooling2D, Dense, Dropout, Activation, Flatten
 from keras.layers import Input
 from keras.models import Model
 from keras.utils import np_utils
+from keras_vggface import VGGFace
 from sklearn.utils import shuffle
-from sklearn.model_selection import train_test_split
-from keras.applications.resnet50 import ResNet50
+from sklearn.model_selection import train_test_split, StratifiedKFold, StratifiedShuffleSplit
+from sklearn import metrics
+from sklearn.metrics import classification_report, confusion_matrix
 from keras.applications.resnet50 import preprocess_input, decode_predictions
 from keras.utils import np_utils, to_categorical
 from sklearn import preprocessing
-from keras import optimizers
+from keras import optimizers, regularizers, initializers
 from keras.engine import Model
 from keras.layers import Flatten, Dense, Input
-from keras_vggface.vggface import VGGFace
+# from keras_vggface.vggface import VGGFace
 from keras.preprocessing.image import ImageDataGenerator
 from sklearn.preprocessing import MultiLabelBinarizer
 from keras.applications.imagenet_utils import preprocess_input
 
-from keras import optimizers, regularizers, initializers
-import matplotlib
-matplotlib.use('agg')
+# from tensorflow.python.keras.models import load_model
+
 import matplotlib.pyplot as plt
-#import matplotlib.pyplot as plt
-#from imagenet_utils import decode_predictions
-import cv2
+
+
+# import matplotlib.pyplot as plt
+# from imagenet_utils import decode_predictions
+
+def printWrongPredictions(pred, y_test):
+	array = []
+	vis = np.zeros([468, 20, 3], dtype=np.uint8)
+
+	# Print predicted vs. Actual
+	for i in range(len(pred)):
+		biggest_value_index = pred[i].argmax(axis=0)
+		value = pred[i][biggest_value_index]
+		y_classes = pred[i] >= value
+		y_classes = y_classes.astype(int)
+		array.append(y_classes)
+	predicted_list = np.asarray(array, dtype="int32")
+
+	y_test = lb.inverse_transform(y_test)
+	pred = lb.inverse_transform(predicted_list)
+	print(y_test)
+
+	for i in range(len(y_test)):
+		if y_test[i] != pred[i]:
+			print("Predicted:", pred[i], " Actual: ", y_test[i])
+
+			horizontal_white = np.zeros([468, 20, 3], dtype=np.uint8)
+			vertical_white = np.zeros([20, 224, 3], dtype=np.uint8)
+			vis1 = np.concatenate((X_test[i], vertical_white), axis=0)
+			val = np.where(y_test == pred[i])[0][0]
+			vis1 = np.concatenate((vis1, X_test[val]), axis=0)
+			vis1 = np.concatenate((vis1, horizontal_white), axis=1)
+			vis = np.concatenate((vis, vis1), axis=1)
+	cv2.imshow('wrong-predictions.png', vis)
+
+
+# cv2.waitKey(100)
+
+def plot_data_graph(hist):
+	import matplotlib.pyplot as plt
+	# visualizing losses and accuracy
+	train_loss = hist.history['loss']
+	val_loss = hist.history['val_loss']
+	train_acc = hist.history['categorical_accuracy']
+	val_acc = hist.history['val_categorical_accuracy']
+	xc = range(nb_epochs)
+
+	plt.figure(1, figsize=(12, 10))
+	plt.plot(xc, train_loss)
+	plt.plot(xc, val_loss)
+	plt.xlabel('num of Epochs')
+	plt.ylabel('loss')
+	plt.title('train_loss vs val_loss')
+	plt.grid(True)
+	plt.legend(['train', 'val'])
+	plt.show()
+
+	plt.figure(2, figsize=(12, 10))
+	plt.plot(xc, train_acc)
+	plt.plot(xc, val_acc)
+	plt.xlabel('num of Epochs')
+	plt.ylabel('accuracy')
+	plt.title('train_acc vs val_acc')
+	plt.grid(True)
+	plt.legend(['train', 'val'], loc=4)
+	plt.show()
+
+
+def plot_hist(hist_array):
+	xc = range(nb_epochs)
+
+	loss_array = []
+	val_loss_array =[]
+	accuracy_array = []
+	val_accuracy_array = []
+
+	for model_histories in hist_array:
+		loss_array.append(model_histories.history['loss'])
+		val_loss_array.append(model_histories.history['val_loss'])
+		accuracy_array.append(model_histories.history['categorical_accuracy'])
+		val_accuracy_array.append(model_histories.history['val_categorical_accuracy'])
+
+	print()
+
+	plt.figure(1)
+	plt.plot(xc, model_histories.history['loss'])
+	plt.plot(xc, model_histories.history['val_loss'])
+	plt.xlabel('num of Epochs')
+	plt.ylabel('loss')
+	plt.title('train_loss vs val_loss')
+	plt.show()
+
+	plt.figure(2)
+	plt.plot(xc, model_histories.history['categorical_accuracy'], labels="Accuracy")
+	plt.plot(xc, val_accuracy_array, labels="Accuracy")
+	plt.xlabel('num of Epochs')
+	plt.ylabel('accuracy')
+	plt.title('train_acc vs val_acc')
+	plt.legend()
+	plt.show()
 
 
 nb_classes = 136
-nb_epochs = 10
-b_size = 32
-augment_data = True
+nb_epochs = 3
+n_split = 5
+b_size = 16
+augment_data = False
 PATH = os.getcwd()
-data_path = PATH + '/Dataset'
+data_path = PATH + '/Dataset_resized'
 data_dir_list = os.listdir(data_path)
-plot_data = False
-training_model = 4
-
-mlb = MultiLabelBinarizer()
+plot_data = True
+training_model = "ResNet50"
 
 img_data_list = []
 labels = []
 list_of_image_paths = []
 label_test = []
 
-def plot_data(hist):
-	# visualizing losses and accuracy
-	train_loss = hist.history['loss']
-	val_loss = hist.history['val_loss']
-	train_acc = hist.history['acc']
-	val_acc = hist.history['val_acc']
-	xc=range(12)
-
-	plt.figure(1,figsize=(7,5))
-	plt.plot(xc,train_loss)
-	plt.plot(xc,val_loss)
-	plt.xlabel('num of Epochs')
-	plt.ylabel('loss')
-	plt.title('train_loss vs val_loss')
-	plt.grid(True)
-	plt.legend(['train','val'])
-	#print plt.style.available # use bmh, classic,ggplot for big pictures
-	plt.style.use(['classic'])
-
-	plt.figure(2,figsize=(7,5))
-	plt.plot(xc,train_acc)
-	plt.plot(xc,val_acc)
-	plt.xlabel('num of Epochs')
-	plt.ylabel('accuracy')
-	plt.title('train_acc vs val_acc')
-	plt.grid(True)
-	plt.legend(['train','val'],loc=4)
-	#print plt.style.available # use bmh, classic,ggplot for big pictures
-	plt.style.use(['classic'])
-	plt.savefig('test.png')
-
-
 for folder_name in data_dir_list:
 	img_list = os.listdir(data_path + '/' + folder_name)
-
 	for image in img_list:
 		retrieve_dir = data_path + "/" + folder_name + "/" + image
 		images = cv2.imread(retrieve_dir, 3)
+		if training_model == "FACENET":
+			images = cv2.resize(images, (160, 160))  # FOR FACENET RESIZE
 		list_of_image_paths.append(images)
-
-	#img_data_list.append(img_list)
+	img_data_list.append(img_list)
 	labels.append(folder_name)
-
 	label_test.append([folder_name] * len(img_list))
 
-
 list_of_image_paths = np.array(list_of_image_paths)
-flattened_list = [y for x in label_test for y in x]
-flattened_list = np.asarray(flattened_list, dtype="str")
-lb = preprocessing.LabelBinarizer()
-lb.fit(flattened_list)
-lb.classes_
+flattened_list = np.asarray([y for x in label_test for y in x], dtype="str")
+lb = preprocessing.LabelBinarizer().fit(flattened_list)
 labels = lb.transform(flattened_list)
-#labels = mlb.fit_transform(flatten_list)
-print(len(labels))
+print("Number of Labels: ", len(labels))
 
-X_train, X_test, y_train, y_test = train_test_split(list_of_image_paths, labels, test_size=0.2, random_state=2)
+skf = StratifiedShuffleSplit(n_splits=n_split, random_state=None, test_size=0.2)
+print(skf.n_splits)
 
-augmented_Xtrain = []
-y_train_labels = []
+all_fold_accuracy = []
+all_fold_loss = []
+counter = 1
+for train_index, test_index in skf.split(list_of_image_paths, labels):
+	X_train, X_test = list_of_image_paths[train_index], list_of_image_paths[test_index]
+	y_train, y_test = labels[train_index], labels[test_index]
 
-images = []
-train_datagen = ImageDataGenerator(featurewise_std_normalization=True, rotation_range=10, horizontal_flip=True, vertical_flip=True, zoom_range=0.4)
+	augmented_Xtrain = []
+	y_train_labels = []
 
-for index in range(len(X_train)):
+	images = []
+	train_datagen = ImageDataGenerator(rotation_range=10, horizontal_flip=True, vertical_flip=True, zoom_range=0.4)
 
-	img = X_train[index]
-	label = y_train[index]
+	for index in range(len(X_train)):
 
-	images.append(img)
-	if augment_data:
-		img = np.expand_dims(img,0)
-		augmented_itr = train_datagen.flow(img)
-		[images.append(next(augmented_itr)[0].astype(np.uint8)) for i in range(6)]
-		y_train_labels.extend([label]*7)
-	else:
-		y_train_labels.append(label)
+		img = X_train[index]
+		label = y_train[index]
 
-augmented_X_train = np.uint8(images)
-y_train_labels = np.int32(y_train_labels)
+		images.append(img)
+		if augment_data:
+			img = np.expand_dims(img, 0)
+			augmented_itr = train_datagen.flow(img)
+			[images.append(next(augmented_itr)[0].astype(np.uint8)) for i in range(6)]
+			y_train_labels.extend([label] * 7)
+		else:
+			y_train_labels.append(label)
 
-# training_model 1 for VGGFace 2 for VGG16
-im_shape = (224,224,3)
-image_input = Input(shape=im_shape)
+	augmented_X_train = np.uint8(images)
+	y_train_labels = np.int32(y_train_labels)
 
-#################VGGFace Model############
-if training_model == 1:
+	# training_model 1 for VGGFace 2 for VGG16
+	im_shape = (224, 224, 3)
+	image_input = Input(shape=im_shape)
 
-	hidden_dim = 2048
+	##############################################################################
+	# RESNET 50
+	##############################################################################
+	if training_model == "ResNet50":
+		base_resnet = ResNet50(weights='imagenet', include_top=False, pooling='avg')
+		x = base_resnet.layers[-1]
+		out = Dense(units=nb_classes, activation='softmax', name='output', use_bias=True,
+					kernel_initializer=initializers.random_normal(mean=0.0, stddev=0.01),
+					kernel_regularizer=regularizers.l2(0.001),
+					bias_initializer='zeros', bias_regularizer=regularizers.l2(0.001)
+					)(x.output)
+		custom_resnet_model = Model(inputs=base_resnet.input, outputs=out)
 
-	vggface_model = VGGFace(input_tensor=image_input, include_top=True, weights='vggface', input_shape=im_shape,
-		                     pooling='max')
-	vggface_model.summary()
+		# custom_resnet_model.summary()
 
-	pool5 = vggface_model.layers[-8]
+		for layer in custom_resnet_model.layers:
+			layer.trainable = True
+		custom_resnet_model.summary()
+		# sgd = optimizers.SGD(lr=1e-3, momentum=0.9, nesterov=True)
+		# adadelta = optimizers.Adadelta(lr=1e-2)
+		# nadam = optimizers.nadam(lr=1)
+		adam = optimizers.adam(lr=0.0001)
+		custom_resnet_model.compile(loss='categorical_crossentropy', optimizer=adam, metrics=['categorical_accuracy'])
 
-	flatten = vggface_model.layers[-7]
+		t = time.time()
+		hist = custom_resnet_model.fit(X_train, y_train, batch_size=b_size, epochs=nb_epochs, verbose=1,
+									   validation_data=(X_test, y_test))
+		print('Training time: %s' % (t - time.time()))
+		(loss, accuracy) = custom_resnet_model.evaluate(X_test, y_test, batch_size=b_size, verbose=1)
 
-	fc6 = vggface_model.layers[-6]
-	fc6relu = vggface_model.layers[-5]
+		print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
+		pred = custom_resnet_model.predict(X_test)
+		y_test_labels = lb.inverse_transform(y_test)
+		pred = lb.inverse_transform(pred)
+		# printWrongPredictions(pred, y_test)
 
-	fc7 = vggface_model.layers[-4]
-	fc7relu = vggface_model.layers[-3]
+		if plot_data:
+			plot_data_graph(hist)
 
-	fc8 = vggface_model.layers[-2]
-	fc8relu = vggface_model.layers[-1]
+		all_fold_accuracy.append(accuracy * 100)
+		all_fold_loss.append(loss)
 
-	dropout1 = Dropout(0.5)
-	dropout2 = Dropout(0.5)
+		# CM
+		cm = metrics.confusion_matrix(y_test_labels, pred)
+		cas = plt.imshow(cm, cmap='Greys', interpolation='nearest')
+		plt.xlabel("Predicted labels")
+		plt.ylabel("True labels")
+		plt.title('Confusion matrix')
+		plt.colorbar()
+		plt.clim(0, 1);
+		plt.show()
 
-	# Reconnect the layers
-	x = dropout1(pool5.output)
-	x = flatten(x)
-	x = fc6(x)
-	x = fc6relu(x)
-	x = dropout2(x)
-	x = fc7(x)
-	x = fc7relu(x)
-	out = Dense(CLASSESNR, activation='softmax', name='output')(x)
+		setOfLabels = list(set(y_test_labels.flatten()))
+		print(classification_report(y_test_labels, pred, target_names=setOfLabels))
+		counter = counter + 1
 
-	custom_vggface_model = Model(vggface_model.input, output=out)
-	 # Resnet_model = ResNet50(weights='imagenet',include_top=False)
+	####################################################################
+	# FACENET#
+	####################################################################
+	if training_model == "FACENET":
+		facenet_model = load_model('facenet_keras.h5')
+		weights = facenet_model.load_weights('facenet_keras_weights.h5')
+		x = facenet_model.layers[-3]
+		denseLayer = Dense(nb_classes, activation='softmax', name='output', use_bias=True,
+						   #             kernel_initializer=initializers.random_normal(mean=0.0, stddev=0.01),
+						   #             kernel_regularizer=regularizers.l2(0.001),
+						   #             bias_initializer='zeros', bias_regularizer=regularizers.l2(0.001))(x.output)
+						   )(x.output)
+		# batchNorm =
+		custom_facenet_model = Model(inputs=facenet_model.input, outputs=denseLayer)
+		custom_facenet_model.summary()
 
-	vggface_model.summary()
-	custom_vggface_model.summary()
+		custom_facenet_model.compile(loss='categorical_crossentropy', optimizer='adam',
+									 metrics=['categorical_accuracy'])
+		custom_facenet_model.fit(X_train, y_train, batch_size=b_size, epochs=nb_epochs, verbose=1,
+								 validation_data=(X_test, y_test))
+		(loss, accuracy) = custom_facenet_model.evaluate(X_test, y_test, batch_size=b_size, verbose=1)
+		print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
+		pred = custom_facenet_model.predict(X_test)
+		# printWrongPredictions(pred, y_test)
 
-	for layer in custom_vggface_model.layers[:-1]:
-		 layer.trainable = False
+		if plot_data:
+			plot_data(hist)
 
-	custom_vggface_model.layers[-1].trainable
-	custom_vggface_model.summary()
-
-	sgd = optimizers.SGD(lr=0.001, decay=1e-5, momentum=0.9, nesterov=True)
-	custom_vggface_model.compile(loss='categorical_crossentropy', optimizer=sgd, metrics=['accuracy'])
-
-	t = time.time()
-	hist = custom_vggface_model.fit(augmented_X_train, y_train_labels, batch_size= b_size, epochs=nb_epochs, verbose=1,
-		                             validation_data=(X_test, y_test))
-	print('Training time: %s' % (t - time.time()))
-	(loss, accuracy) = custom_vggface_model.evaluate(X_test, y_test, batch_size= b_size, verbose=1)
-
-	print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
-
-#################VGG Model############
-if training_model == 2:
-	vgg_model = VGG16(input_tensor=image_input, include_top=True,weights='imagenet')
-	vgg_model.summary()
-	last_layer = vgg_model.get_layer('fc2').output
-	##x= Flatten(name='flatten')(last_layer)
-	out = Dense(nb_classes, activation='softmax', name='output')(last_layer)
-	custom_vgg_model = Model(image_input, out)
-	custom_vgg_model.summary()
-
-	for layer in custom_vgg_model.layers[:-1]:
-		layer.trainable = False
-	custom_vgg_model.layers[3].trainable
-	custom_vgg_model.summary()
-	sgd = optimizers.SGD(lr=0.001, decay=1e-6, momentum=0.9, nesterov=True)
-	custom_vgg_model.compile(loss='categorical_crossentropy',optimizer='adam' ,metrics=['accuracy'])
-
-	t=time.time()
-	t = now()
-
-	hist = custom_vgg_model.fit(X_train, y_train, batch_size = b_size, epochs = nb_epochs, verbose=1, validation_data=(X_test, y_test))
-	print('Training time: %s' % (t - time.time()))
-	(loss, accuracy) = custom_vgg_model.evaluate(X_test, y_test, batch_size=20, verbose=1)
-
-	print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss,accuracy * 100))
+		all_fold_accuracy.append(accuracy * 100)
+		all_fold_loss.append(loss)
 
 
-if training_model == 3:
+		cm = metrics.confusion_matrix(y_test_labels, pred)
+		cas = plt.imshow(cm, cmap='Greys', interpolation='nearest')
+		plt.xlabel("Predicted labels")
+		plt.ylabel("True labels")
+		plt.title('Confusion matrix')
+		plt.colorbar()
+		plt.clim(0, 1);
+		plt.show()
 
-	base_resnet = ResNet50(weights ='imagenet', include_top = False, pooling= 'avg')
-	x = base_resnet.layers[-1]
-	out = Dense(units=nb_classes, activation='softmax', name='output',use_bias=True,
-		        kernel_initializer=initializers.random_normal(mean=0.0, stddev=0.01),
-		        kernel_regularizer=regularizers.l2(0.001),
-		        bias_initializer='zeros', bias_regularizer=regularizers.l2(0.001)
-		        )(x.output)
-	custom_resnet_model = Model(inputs = base_resnet.input, outputs=out)
+		print(classification_report(y_test, pred, target_names=y_test_labels.flatten()))
 
-	#custom_resnet_model.summary()
+		counter = counter + 1
 
-	for layer in custom_resnet_model.layers:
-		layer.trainable = True
-	custom_resnet_model.summary()
-	sgd = optimizers.SGD(lr=1e-3, momentum=0.9, nesterov=True)
-	adadelta = optimizers.Adadelta(lr=1e-2)
-	nadam = optimizers.nadam(lr=1)
-	adam = optimizers.adam(lr=0.0001)
-	custom_resnet_model.compile(loss='categorical_crossentropy', optimizer=adam, metrics=['categorical_accuracy'])
+print("Mean accuracy over all folds: ", mean(all_fold_accuracy))
+print("Mean loss over all folds: ", mean(all_fold_loss))
+# ################VGGFace Model############
+# if training_model == 1:
+#
+# 	hidden_dim = 2048
+#
+# 	vggface_model = VGGFace(input_tensor=image_input, include_top=True, weights='vggface', input_shape=im_shape,
+# 		                     pooling='max')
+# 	vggface_model.summary()
+#
+# 	pool5 = vggface_model.layers[-8]
+#
+# 	flatten = vggface_model.layers[-7]
+#
+# 	fc6 = vggface_model.layers[-6]
+# 	fc6relu = vggface_model.layers[-5]
+#
+# 	fc7 = vggface_model.layers[-4]
+# 	fc7relu = vggface_model.layers[-3]
+#
+# 	fc8 = vggface_model.layers[-2]
+# 	fc8relu = vggface_model.layers[-1]
+#
+# 	dropout1 = Dropout(0.5)
+# 	dropout2 = Dropout(0.5)
+#
+# 	# Reconnect the layers
+# 	x = dropout1(pool5.output)
+# 	x = flatten(x)
+# 	x = fc6(x)
+# 	x = fc6relu(x)
+# 	x = dropout2(x)
+# 	x = fc7(x)
+# 	x = fc7relu(x)
+# 	out = Dense(nb_classes, activation='softmax', name='output')(x)
+#
+# 	custom_vggface_model = Model(vggface_model.input, output=out)
+# 	 # Resnet_model = ResNet50(weights='imagenet',include_top=False)
+#
+# 	vggface_model.summary()
+# 	custom_vggface_model.summary()
+#
+# 	for layer in custom_vggface_model.layers[:-1]:
+# 		 layer.trainable = False
+#
+# 	custom_vggface_model.layers[-1].trainable
+# 	custom_vggface_model.summary()
+#
+# 	sgd = optimizers.SGD(lr=0.001, decay=1e-5, momentum=0.9, nesterov=True)
+# 	custom_vggface_model.compile(loss='categorical_crossentropy', optimizer=sgd, metrics=['accuracy'])
+#
+# 	t = time.time()
+# 	hist = custom_vggface_model.fit(augmented_X_train, y_train_labels, batch_size= b_size, epochs=nb_epochs, verbose=1,
+# 		                             validation_data=(X_test, y_test))
+# 	print('Training time: %s' % (t - time.time()))
+# 	(loss, accuracy) = custom_vggface_model.evaluate(X_test, y_test, batch_size= b_size, verbose=1)
+#
+# 	print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
+#
+# #################VGG Model############
+# if training_model == 2:
+# 	vgg_model = VGG16(input_tensor=image_input, include_top=True,weights='imagenet')
+# 	vgg_model.summary()
+# 	last_layer = vgg_model.get_layer('fc2').output
+# 	##x= Flatten(name='flatten')(last_layer)
+# 	out = Dense(nb_classes, activation='softmax', name='output')(last_layer)
+# 	custom_vgg_model = Model(image_input, out)
+# 	custom_vgg_model.summary()
+#
+# 	for layer in custom_vgg_model.layers[:-1]:
+# 		layer.trainable = True
+#
+# 	custom_vgg_model.summary()
+# 	sgd = optimizers.SGD(lr=0.001, decay=1e-6, momentum=0.9, nesterov=True)
+# 	custom_vgg_model.compile(loss='categorical_crossentropy',optimizer='adam' ,metrics=['accuracy'])
+#
+# 	t=time.time()
+# 	t = now()
+#
+# 	hist = custom_vgg_model.fit(X_train, y_train, batch_size = b_size, epochs = nb_epochs, verbose=1, validation_data=(X_test, y_test))
+# 	print('Training time: %s' % (t - time.time()))
+# 	(loss, accuracy) = custom_vgg_model.evaluate(X_test, y_test, batch_size=20, verbose=1)
+#
+# 	print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss,accuracy * 100))
 
-	t = time.time()
-	hist = custom_resnet_model.fit(X_train, y_train, batch_size=b_size, epochs=nb_epochs, verbose=1,
-		                            validation_data=(X_test, y_test))
-	print('Training time: %s' % (t - time.time()))
-	(loss, accuracy) = custom_resnet_model.evaluate(X_test, y_test, batch_size=b_size, verbose=1)
 
-	print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
-	pred = custom_resnet_model.predict(X_test)
-	y_test_labels = lb.inverse_transform(y_test)
 
-	for test_img, test_label in zip(X_test, y_test):
-		x = Image.img_to_array(test_img)
-		x = np.expand_dims(x, axis=0)
-		x = preprocess_input(x)
-		prediction = custom_resnet_model.predict(x)
-		index = np.argmax(prediction) 
-		index2 = np.argmax(test_label) 
-		print(prediction, test_label)
-		print(index,index2, prediction[0][index], test_label[index], prediction[0][index2])
 
-	if plot_data:
-		polot_data(hist)
 
-	
+
+
+
+
+
 
 
 
