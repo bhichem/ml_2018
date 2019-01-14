@@ -13,6 +13,10 @@ import time
 import cv2
 
 from keras.models import load_model
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+from skimage.color import rgb2gray
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 import resnet50
 from resnet50 import ResNet50
@@ -39,7 +43,7 @@ from keras.engine import Model
 from keras.layers import Flatten, Dense, Input
 # from keras_vggface.vggface import VGGFace
 from keras.preprocessing.image import ImageDataGenerator
-from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
 from keras.applications.imagenet_utils import preprocess_input
 
 # from tensorflow.python.keras.models import load_model
@@ -49,6 +53,60 @@ import matplotlib.pyplot as plt
 
 # import matplotlib.pyplot as plt
 # from imagenet_utils import decode_predictions
+
+def visualize_scatter_with_images(X_2d_data, images, figsize=(50,50), image_zoom=0.2):
+    fig, ax = plt.subplots(figsize=figsize)
+    artists = []
+    for xy, i in zip(X_2d_data, images):
+        x0, y0 = xy
+        img = OffsetImage(i, zoom=image_zoom)
+        ab = AnnotationBbox(img, (x0, y0), xycoords='data', frameon=False)
+        artists.append(ax.add_artist(ab))
+    ax.update_datalim(X_2d_data)
+    ax.autoscale()
+    plt.show()
+
+
+def visualize_scatter(data_2d, label_ids, figsize=(25, 25)):
+	plt.figure(figsize=figsize)
+	plt.grid()
+
+	nb_classes = len(np.unique(label_ids))
+	index = 0
+	for label_id in np.unique(label_ids):
+
+		plt.scatter(data_2d[np.where(label_ids == label_id), 0],
+					data_2d[np.where(label_ids == label_id), 1],
+					marker='o',
+					color=plt.cm.Set1(index / float(nb_classes)),
+					linewidth='1',
+					alpha=0.4,
+					label= label_id
+					)
+		index += 1
+	plt.legend(loc='best')
+	plt.show()
+
+def perform_tsne(images, labels):
+	grayImages = []
+	for image in images:
+		gray = rgb2gray(image)
+		gray = gray.flatten()
+		grayImages.append(gray)
+	print(grayImages[0].shape)
+
+	pca = PCA(n_components=180)
+	pca_result = pca.fit_transform(grayImages)
+	print(pca_result.shape)
+	tsne = TSNE(n_components=2, perplexity=40.0)
+	tsne_result = tsne.fit_transform(pca_result)
+	tsne_result_scaled = StandardScaler().fit_transform(tsne_result)
+
+	float_labels = [float (label) for label in labels]
+
+	# VISUALIZATION OF TSNE !
+	#visualize_scatter(tsne_result_scaled, float_labels)
+	#visualize_scatter_with_images(tsne_result_scaled, images)
 
 def printWrongPredictions(pred, y_test):
 	array = []
@@ -79,9 +137,6 @@ def printWrongPredictions(pred, y_test):
 			vis1 = np.concatenate((vis1, horizontal_white), axis=1)
 			vis = np.concatenate((vis, vis1), axis=1)
 	cv2.imshow('wrong-predictions.png', vis)
-
-
-# cv2.waitKey(100)
 
 def plot_data_graph(hist):
 	import matplotlib.pyplot as plt
@@ -148,15 +203,15 @@ def plot_hist(hist_array):
 
 
 nb_classes = 136
-nb_epochs = 3
+nb_epochs = 5
 n_split = 5
-b_size = 16
+b_size = 8
 augment_data = False
 PATH = os.getcwd()
 data_path = PATH + '/Dataset_resized'
 data_dir_list = os.listdir(data_path)
 plot_data = True
-training_model = "ResNet50"
+training_model = "VGG-16"
 
 img_data_list = []
 labels = []
@@ -175,6 +230,10 @@ for folder_name in data_dir_list:
 	labels.append(folder_name)
 	label_test.append([folder_name] * len(img_list))
 
+
+perform_tsne(list_of_image_paths, labels)
+
+
 list_of_image_paths = np.array(list_of_image_paths)
 flattened_list = np.asarray([y for x in label_test for y in x], dtype="str")
 lb = preprocessing.LabelBinarizer().fit(flattened_list)
@@ -187,6 +246,8 @@ print(skf.n_splits)
 all_fold_accuracy = []
 all_fold_loss = []
 counter = 1
+
+
 for train_index, test_index in skf.split(list_of_image_paths, labels):
 	X_train, X_test = list_of_image_paths[train_index], list_of_image_paths[test_index]
 	y_train, y_test = labels[train_index], labels[test_index]
@@ -195,7 +256,7 @@ for train_index, test_index in skf.split(list_of_image_paths, labels):
 	y_train_labels = []
 
 	images = []
-	train_datagen = ImageDataGenerator(rotation_range=10, horizontal_flip=True, vertical_flip=True, zoom_range=0.4)
+	train_datagen = ImageDataGenerator(rotation_range=10,horizontal_flip=True, vertical_flip=True, zoom_range=0.4)
 
 	for index in range(len(X_train)):
 
@@ -305,7 +366,6 @@ for train_index, test_index in skf.split(list_of_image_paths, labels):
 		all_fold_accuracy.append(accuracy * 100)
 		all_fold_loss.append(loss)
 
-
 		cm = metrics.confusion_matrix(y_test_labels, pred)
 		cas = plt.imshow(cm, cmap='Greys', interpolation='nearest')
 		plt.xlabel("Predicted labels")
@@ -316,11 +376,9 @@ for train_index, test_index in skf.split(list_of_image_paths, labels):
 		plt.show()
 
 		print(classification_report(y_test, pred, target_names=y_test_labels.flatten()))
-
 		counter = counter + 1
 
-print("Mean accuracy over all folds: ", mean(all_fold_accuracy))
-print("Mean loss over all folds: ", mean(all_fold_loss))
+
 # ################VGGFace Model############
 # if training_model == 1:
 #
@@ -379,33 +437,36 @@ print("Mean loss over all folds: ", mean(all_fold_loss))
 #
 # 	print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
 #
-# #################VGG Model############
-# if training_model == 2:
-# 	vgg_model = VGG16(input_tensor=image_input, include_top=True,weights='imagenet')
-# 	vgg_model.summary()
-# 	last_layer = vgg_model.get_layer('fc2').output
-# 	##x= Flatten(name='flatten')(last_layer)
-# 	out = Dense(nb_classes, activation='softmax', name='output')(last_layer)
-# 	custom_vgg_model = Model(image_input, out)
-# 	custom_vgg_model.summary()
-#
-# 	for layer in custom_vgg_model.layers[:-1]:
-# 		layer.trainable = True
-#
-# 	custom_vgg_model.summary()
-# 	sgd = optimizers.SGD(lr=0.001, decay=1e-6, momentum=0.9, nesterov=True)
-# 	custom_vgg_model.compile(loss='categorical_crossentropy',optimizer='adam' ,metrics=['accuracy'])
-#
-# 	t=time.time()
-# 	t = now()
-#
-# 	hist = custom_vgg_model.fit(X_train, y_train, batch_size = b_size, epochs = nb_epochs, verbose=1, validation_data=(X_test, y_test))
-# 	print('Training time: %s' % (t - time.time()))
-# 	(loss, accuracy) = custom_vgg_model.evaluate(X_test, y_test, batch_size=20, verbose=1)
-#
-# 	print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss,accuracy * 100))
+	# #################VGG Model############
+	if training_model == "VGG-16":
+		vgg_model = VGG16(input_tensor=image_input, include_top=True, weights='imagenet')
+		vgg_model.summary()
+		last_layer = vgg_model.get_layer('fc2').output
+		##x= Flatten(name='flatten')(last_layer)
+		out = Dense(nb_classes, activation='softmax', name='output')(last_layer)
+		custom_vgg_model = Model(image_input, out)
+		custom_vgg_model.summary()
+
+		for layer in custom_vgg_model.layers:
+			layer.trainable = True
+
+		custom_vgg_model.summary()
+		adam = optimizers.adam(lr=0.0001)
+		sgd = optimizers.SGD(lr=0.00001, decay=1e-6, momentum=0.9, nesterov=True)
+		custom_vgg_model.compile(loss='categorical_crossentropy', optimizer=adam ,metrics=['categorical_accuracy'])
+
+		t=time.time()
+
+		hist = custom_vgg_model.fit(X_train, y_train, batch_size = b_size, epochs = nb_epochs, verbose=1, validation_data=(X_test, y_test))
+		print('Training time: %s' % (t - time.time()))
+		(loss, accuracy) = custom_vgg_model.evaluate(X_test, y_test, batch_size=b_size, verbose=1)
+
+		print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss,accuracy * 100))
 
 
+# PRINT OVERALL ACCURACY AND MEAN OVER ALL FOLDS
+print("Mean accuracy over all folds: ", mean(all_fold_accuracy))
+print("Mean loss over all folds: ", mean(all_fold_loss))
 
 
 
