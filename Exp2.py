@@ -11,7 +11,7 @@ import numpy as np
 import os
 import time
 import cv2
-
+import skimage
 from keras.models import load_model
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from skimage.color import rgb2gray
@@ -108,9 +108,47 @@ def perform_tsne(images, labels):
 	#visualize_scatter(tsne_result_scaled, float_labels)
 	#visualize_scatter_with_images(tsne_result_scaled, images)
 
+def write_result_image(image,pred_image, resultText, image_width):
+
+	vertical_white = np.full([image_width, 40, 3], 255, dtype=np.uint8)
+	horizontal_white = np.full([40, image_width*2 + 120, 3], 255, dtype=np.uint8)
+	result_image = np.concatenate((vertical_white, image), axis=1)
+	result_image = np.concatenate((result_image, vertical_white), axis=1)
+	result_image = np.concatenate((result_image, pred_image), axis=1)
+	result_image = np.concatenate((result_image, vertical_white), axis=1)
+	result_image = np.concatenate((horizontal_white, result_image), axis=0)
+
+	imageHeight, imageWidth, sceneNumChannels = result_image.shape
+	SCALAR_Black = (0.0, 0.0, 0.0)
+
+	fontFace = cv2.FONT_HERSHEY_TRIPLEX
+
+	fontScale = 0.5
+	fontThickness = 1
+
+	fontThickness = int(fontThickness)
+
+	upperLeftTextOriginX = int(imageWidth * 0.05)
+	upperLeftTextOriginY = int(imageHeight * 0.05)
+
+	textSize, baseline = cv2.getTextSize(resultText, fontFace, fontScale, fontThickness)
+	textSizeWidth, textSizeHeight = textSize
+
+	lowerLeftTextOriginX = upperLeftTextOriginX
+	lowerLeftTextOriginY = upperLeftTextOriginY + textSizeHeight
+
+	cv2.putText(result_image, resultText, (lowerLeftTextOriginX, lowerLeftTextOriginY), fontFace, fontScale, SCALAR_Black, fontThickness)
+	return result_image
+
 def printWrongPredictions(pred, y_test):
 	array = []
-	vis = np.zeros([468, 20, 3], dtype=np.uint8)
+	image_width = 0
+	if training_model == "FACENET":
+		image_width = 160
+	else:
+		image_width = 224
+
+	wrong_predictions = np.full([1, image_width*2 + 120, 3], 255, dtype=np.uint8)
 
 	# Print predicted vs. Actual
 	for i in range(len(pred)):
@@ -128,15 +166,11 @@ def printWrongPredictions(pred, y_test):
 	for i in range(len(y_test)):
 		if y_test[i] != pred[i]:
 			print("Predicted:", pred[i], " Actual: ", y_test[i])
-
-			horizontal_white = np.zeros([468, 20, 3], dtype=np.uint8)
-			vertical_white = np.zeros([20, 224, 3], dtype=np.uint8)
-			vis1 = np.concatenate((X_test[i], vertical_white), axis=0)
 			val = np.where(y_test == pred[i])[0][0]
-			vis1 = np.concatenate((vis1, X_test[val]), axis=0)
-			vis1 = np.concatenate((vis1, horizontal_white), axis=1)
-			vis = np.concatenate((vis, vis1), axis=1)
-	cv2.imshow('wrong-predictions.png', vis)
+			result_text = "Predicted:"+ pred[i]+ " Actual: "+ y_test[i]
+			vis1 = write_result_image(X_test[val], X_test[i],result_text, image_width)
+			wrong_predictions = np.concatenate((wrong_predictions, vis1), axis=0)
+	#cv2.imshow('wrong-predictions.png', wrong_predictions)
 
 def plot_data_graph(hist):
 	import matplotlib.pyplot as plt
@@ -201,11 +235,32 @@ def plot_hist(hist_array):
 	plt.legend()
 	plt.show()
 
+def flip_images(image):
+	flipped_image = np.fliplr(image)
+	return flipped_image
+
+def rotate(image, angle):
+    rotated_image = skimage.transform.rotate(image, angle= angle, preserve_range=True).astype(np.uint8)
+    return rotated_image
+
+def gaussian_noise(image):
+    mean = 20;
+    std = 20;
+    noisy_img = image + np.random.normal(mean, std, image.shape)
+    noisy_img_clipped = np.clip(noisy_img, 0, 255)
+    return noisy_img_clipped
+
+def lighting(image, gamma):
+   invGamma = 1.0 / gamma
+   table = np.array([((i / 255.0) ** invGamma) * 255
+      for i in np.arange(0, 256)]).astype("uint8")
+   flippedLighting = cv2.LUT(image, table)
+   return flippedLighting
 
 nb_classes = 136
-nb_epochs = 5
+nb_epochs = 10
 n_split = 5
-b_size = 8
+b_size = 2
 augment_data = False
 PATH = os.getcwd()
 data_path = PATH + '/Dataset_resized'
@@ -230,9 +285,7 @@ for folder_name in data_dir_list:
 	labels.append(folder_name)
 	label_test.append([folder_name] * len(img_list))
 
-
-perform_tsne(list_of_image_paths, labels)
-
+#perform_tsne(list_of_image_paths, labels)
 
 list_of_image_paths = np.array(list_of_image_paths)
 flattened_list = np.asarray([y for x in label_test for y in x], dtype="str")
@@ -247,33 +300,71 @@ all_fold_accuracy = []
 all_fold_loss = []
 counter = 1
 
-
 for train_index, test_index in skf.split(list_of_image_paths, labels):
 	X_train, X_test = list_of_image_paths[train_index], list_of_image_paths[test_index]
 	y_train, y_test = labels[train_index], labels[test_index]
-
+	print(y_train.shape)
+	print(type(y_train))
 	augmented_Xtrain = []
 	y_train_labels = []
 
 	images = []
-	train_datagen = ImageDataGenerator(rotation_range=10,horizontal_flip=True, vertical_flip=True, zoom_range=0.4)
+	#train_datagen = ImageDataGenerator(rotation_range=10,horizontal_flip=True, vertical_flip=True, zoom_range=0.4)
+	if augment_data:
+		for index in range(len(X_train)):
 
-	for index in range(len(X_train)):
+			image = X_train[index]
+			label = y_train[index]
 
-		img = X_train[index]
-		label = y_train[index]
+			# plt.imshow((image).astype(np.uint8))
+			# 		# plt.title("Original")
+			# 		# plt.show()
+			# 		# time.sleep(10)
 
-		images.append(img)
-		if augment_data:
-			img = np.expand_dims(img, 0)
-			augmented_itr = train_datagen.flow(img)
-			[images.append(next(augmented_itr)[0].astype(np.uint8)) for i in range(6)]
-			y_train_labels.extend([label] * 7)
-		else:
-			y_train_labels.append(label)
+			flipped_image = flip_images(image)
+			# plt.imshow((flipped_image).astype(np.uint8))
+			# plt.title("Flipped Image")
+			# plt.show()
+			# time.sleep(10)
 
-	augmented_X_train = np.uint8(images)
-	y_train_labels = np.int32(y_train_labels)
+			rotatedMinus10Image = rotate(image, 10)
+			# plt.imshow((rotatedMinus10Image).astype(np.uint8))
+			# plt.title("Rotated Minus 10 Degrees")
+			# plt.show()
+			# time.sleep(10)
+
+			rotatedPlus10Image = rotate(image,  -10)
+			# plt.imshow((rotatedPlus10Image).astype(np.uint8))
+			# plt.title("Rotated Plus 10 Degrees")
+			# plt.show()
+			# time.sleep(10)
+
+			gaussianImage = gaussian_noise(image)
+			# plt.imshow((gaussianImage).astype(np.uint8))
+			# plt.title("Gaussian Noise")
+			# plt.show()
+			# time.sleep(10)
+
+			darkerImage = lighting(image, 0.5)
+			# plt.imshow((darkerImage).astype(np.uint8))
+			# plt.title("Darkened Image")
+			# plt.show()
+			# time.sleep(10)
+
+			lighterImage = lighting(image,  1.5)
+			# plt.imshow((lighterImage).astype(np.uint8))
+			# plt.title("Lighter Image")
+			# plt.show()
+			# time.sleep(10)
+
+			augmented_Xtrain.extend([image, flipped_image, rotatedMinus10Image, rotatedPlus10Image, gaussianImage, darkerImage, lighterImage])
+			y_train_labels.extend([label]*7)
+
+			X_train = np.uint8(augmented_Xtrain)
+			y_train = np.int32(y_train_labels)
+	else:
+		X_train = X_train
+		y_train = y_train
 
 	# training_model 1 for VGGFace 2 for VGG16
 	im_shape = (224, 224, 3)
@@ -292,11 +383,9 @@ for train_index, test_index in skf.split(list_of_image_paths, labels):
 					)(x.output)
 		custom_resnet_model = Model(inputs=base_resnet.input, outputs=out)
 
-		# custom_resnet_model.summary()
-
 		for layer in custom_resnet_model.layers:
 			layer.trainable = True
-		custom_resnet_model.summary()
+		#custom_resnet_model.summary()
 		# sgd = optimizers.SGD(lr=1e-3, momentum=0.9, nesterov=True)
 		# adadelta = optimizers.Adadelta(lr=1e-2)
 		# nadam = optimizers.nadam(lr=1)
@@ -312,8 +401,8 @@ for train_index, test_index in skf.split(list_of_image_paths, labels):
 		print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
 		pred = custom_resnet_model.predict(X_test)
 		y_test_labels = lb.inverse_transform(y_test)
+		printWrongPredictions(pred, y_test)
 		pred = lb.inverse_transform(pred)
-		# printWrongPredictions(pred, y_test)
 
 		if plot_data:
 			plot_data_graph(hist)
@@ -347,21 +436,23 @@ for train_index, test_index in skf.split(list_of_image_paths, labels):
 						   #             kernel_regularizer=regularizers.l2(0.001),
 						   #             bias_initializer='zeros', bias_regularizer=regularizers.l2(0.001))(x.output)
 						   )(x.output)
-		# batchNorm =
 		custom_facenet_model = Model(inputs=facenet_model.input, outputs=denseLayer)
-		custom_facenet_model.summary()
-
-		custom_facenet_model.compile(loss='categorical_crossentropy', optimizer='adam',
+		#custom_facenet_model.summary()
+		adam = optimizers.adam(lr=0.0001)
+		custom_facenet_model.compile(loss='categorical_crossentropy', optimizer=adam,
 									 metrics=['categorical_accuracy'])
-		custom_facenet_model.fit(X_train, y_train, batch_size=b_size, epochs=nb_epochs, verbose=1,
+		hist = custom_facenet_model.fit(X_train, y_train, batch_size=b_size, epochs=nb_epochs, verbose=1,
 								 validation_data=(X_test, y_test))
 		(loss, accuracy) = custom_facenet_model.evaluate(X_test, y_test, batch_size=b_size, verbose=1)
 		print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss, accuracy * 100))
 		pred = custom_facenet_model.predict(X_test)
-		# printWrongPredictions(pred, y_test)
+		printWrongPredictions(pred, y_test)
+
+		y_test_labels = lb.inverse_transform(y_test)
+		pred = lb.inverse_transform(pred)
 
 		if plot_data:
-			plot_data(hist)
+			plot_data_graph(hist)
 
 		all_fold_accuracy.append(accuracy * 100)
 		all_fold_loss.append(loss)
@@ -375,9 +466,9 @@ for train_index, test_index in skf.split(list_of_image_paths, labels):
 		plt.clim(0, 1);
 		plt.show()
 
-		print(classification_report(y_test, pred, target_names=y_test_labels.flatten()))
+		setOfLabels = list(set(y_test_labels.flatten()))
+		print(classification_report(y_test_labels, pred, target_names=setOfLabels))
 		counter = counter + 1
-
 
 # ################VGGFace Model############
 # if training_model == 1:
@@ -462,6 +553,32 @@ for train_index, test_index in skf.split(list_of_image_paths, labels):
 		(loss, accuracy) = custom_vgg_model.evaluate(X_test, y_test, batch_size=b_size, verbose=1)
 
 		print("[INFO] loss={:.4f}, accuracy: {:.4f}%".format(loss,accuracy * 100))
+
+
+		pred = custom_vgg_model.predict(X_test)
+		printWrongPredictions(pred, y_test)
+
+		y_test_labels = lb.inverse_transform(y_test)
+		pred = lb.inverse_transform(pred)
+
+		if plot_data:
+			plot_data_graph(hist)
+
+		all_fold_accuracy.append(accuracy * 100)
+		all_fold_loss.append(loss)
+
+		cm = metrics.confusion_matrix(y_test_labels, pred)
+		cas = plt.imshow(cm, cmap='Greys', interpolation='nearest')
+		plt.xlabel("Predicted labels")
+		plt.ylabel("True labels")
+		plt.title('Confusion matrix')
+		plt.colorbar()
+		plt.clim(0, 1);
+		plt.show()
+
+		setOfLabels = list(set(y_test_labels.flatten()))
+		print(classification_report(y_test_labels, pred, target_names=setOfLabels))
+		counter = counter + 1
 
 
 # PRINT OVERALL ACCURACY AND MEAN OVER ALL FOLDS
